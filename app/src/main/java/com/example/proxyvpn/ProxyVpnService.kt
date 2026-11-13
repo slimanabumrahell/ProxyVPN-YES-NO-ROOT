@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -61,6 +63,7 @@ class ProxyVpnService : VpnService() {
         }
 
         running = true
+        state.value = VpnState(active = true, tunnelUp = false)
         startWatchdog(c)
         return START_STICKY
     }
@@ -102,12 +105,14 @@ class ProxyVpnService : VpnService() {
             pass = c.pass
         )
         tunnelUp = true
+        state.update { it.copy(tunnelUp = true) }
         updateNotification("متصل عبر ${c.host}:${c.port}")
     }
 
     private fun stopTunnelNow() {
         try { TunnelBridge.stop() } catch (_: Throwable) {}
         tunnelUp = false
+        state.update { it.copy(tunnelUp = false) }
         // نغلق نسخة hev بعد إيقاف المكتبة
         try { hevPfd?.close() } catch (_: Exception) {}
         hevPfd = null
@@ -122,6 +127,7 @@ class ProxyVpnService : VpnService() {
         // إغلاق الواجهة الأصلية نهائياً
         try { tun?.close() } catch (_: Exception) {}
         tun = null
+        state.value = VpnState()
     }
 
     private fun proxyReachable(c: ProxyConfig): Boolean = try {
@@ -158,8 +164,11 @@ class ProxyVpnService : VpnService() {
             .build()
     }
 
+    data class VpnState(val active: Boolean = false, val tunnelUp: Boolean = false)
+
     companion object {
         const val ACTION_STOP = "com.example.proxyvpn.STOP"
         const val NOTIF_ID = 1
+        val state = MutableStateFlow(VpnState())
     }
 }
