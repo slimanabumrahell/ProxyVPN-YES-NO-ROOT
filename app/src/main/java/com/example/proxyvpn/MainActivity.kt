@@ -41,9 +41,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun disconnect() {
+        // أرسل أمر الإيقاف للخدمة، وبعدها أوقفها مباشرة كخطة احتياطية
         startService(
             Intent(this, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_STOP)
         )
+        stopService(Intent(this, ProxyVpnService::class.java))
     }
 
     @Composable
