@@ -28,6 +28,10 @@ android {
     buildTypes {
         release { isMinifyEnabled = false }
     }
+
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
 }
 
 dependencies {
