@@ -57,18 +57,21 @@ class MainActivity : ComponentActivity() {
         var proxyIp by remember { mutableStateOf("-") }
         val scope = rememberCoroutineScope()
 
-        // حالة الخدمة الفعلية (تتحدث تلقائياً من الخدمة)
         val vpn by ProxyVpnService.state.collectAsState()
-        val connected = vpn.active
+        val rootOn by RootTunnel.active.collectAsState()
+        val rootStatus by RootTunnel.status.collectAsState()
 
-        // عند ما يصير النفق جاهز نحسب IP البروكسي، وعند الانقطاع نمسحه
-        LaunchedEffect(vpn.tunnelUp) {
-            proxyIp = if (vpn.tunnelUp) {
+        val isRoot = cfg.mode == "root"
+        val connected = if (isRoot) rootOn else vpn.active
+        val tunnelReady = if (isRoot) rootOn else vpn.tunnelUp
+
+        LaunchedEffect(tunnelReady, cfg.mode) {
+            proxyIp = if (!tunnelReady) {
+                "-"
+            } else {
                 withContext(Dispatchers.IO) {
                     Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
                 } ?: "فشل"
-            } else {
-                "-"
             }
         }
 
@@ -104,18 +107,53 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(8.dp))
                     Text("IP الحقيقي: $realIp")
                     Text("IP البروكسي: $proxyIp")
+                    if (isRoot && rootStatus.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(rootStatus, style = MaterialTheme.typography.bodySmall)
+                    }
                     Spacer(Modifier.height(16.dp))
                     Button(
                         onClick = {
                             if (connected) {
-                                disconnect()
+                                if (isRoot) {
+                                    scope.launch(Dispatchers.IO) { RootTunnel.stop(this@MainActivity) }
+                                } else {
+                                    disconnect()
+                                }
                             } else {
                                 store.save(cfg)
-                                connect()
+                                if (isRoot) {
+                                    scope.launch(Dispatchers.IO) { RootTunnel.start(this@MainActivity, cfg) }
+                                } else {
+                                    connect()
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (connected) "قطع الاتصال" else "اتصال") }
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("وضع الروت (كل حركة الجهاز)")
+                        Text(
+                            if (isRoot) "يستعمل su من APatch" else "وضع VPN العادي",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = isRoot,
+                        enabled = !connected,
+                        onCheckedChange = {
+                            cfg = cfg.copy(mode = if (it) "root" else "vpn")
+                            store.save(cfg)
+                        }
+                    )
                 }
             }
 
