@@ -1,15 +1,11 @@
 package com.example.proxyvpn
 
+import hev.htproxy.TProxyService
 import java.io.File
 
-/**
- * يربط التطبيق بمكتبة hev-socks5-tunnel.
- * الدوال هنا تستدعي TProxyService من حزمة hev.htproxy
- * (الملف TProxyService.java لازم يكون موجود في المشروع، انظر ملاحظة الإعداد).
- */
 object TunnelBridge {
 
-    fun start(configDir: java.io.File, tunFd: Int, host: String, port: Int, user: String, pass: String) {
+    fun start(configDir: File, tunFd: Int, host: String, port: Int, user: String, pass: String) {
         val yaml = buildString {
             appendLine("tunnel:")
             appendLine("  mtu: 8500")
@@ -23,10 +19,10 @@ object TunnelBridge {
             appendLine("  udp: 'udp'")
         }
         val conf = File(configDir, "tunnel.yml").apply { writeText(yaml) }
-        hev.htproxy.TProxyService.TProxyStartService(conf.absolutePath, tunFd)
+        TProxyService.TProxyStartService(conf.absolutePath, tunFd)
     }
 
     fun stop() {
-        try { hev.htproxy.TProxyService.TProxyStopService() } catch (_: Throwable) {}
+        try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
     }
 }
