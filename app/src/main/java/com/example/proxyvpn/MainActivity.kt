@@ -41,8 +41,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun disconnect() {
-        startService(Intent(this, ProxyVpnService::class.java)
-            .setAction(ProxyVpnService.ACTION_STOP))
+        startService(
+            Intent(this, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_STOP)
+        )
     }
 
     @Composable
@@ -50,9 +51,23 @@ class MainActivity : ComponentActivity() {
         val store = remember { ProxyStore(this) }
         var cfg by remember { mutableStateOf(store.load()) }
         var connected by remember { mutableStateOf(false) }
+        var showApps by remember { mutableStateOf(false) }
         var realIp by remember { mutableStateOf("...") }
         var proxyIp by remember { mutableStateOf("-") }
         val scope = rememberCoroutineScope()
+
+        if (showApps) {
+            AppsScreen(
+                selected = cfg.excluded,
+                onToggle = { pkg, on ->
+                    val newSet = if (on) cfg.excluded + pkg else cfg.excluded - pkg
+                    cfg = cfg.copy(excluded = newSet)
+                    store.save(cfg)
+                },
+                onBack = { showApps = false }
+            )
+            return
+        }
 
         Column(
             modifier = Modifier
@@ -66,8 +81,10 @@ class MainActivity : ComponentActivity() {
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(if (connected) "متصل" else "غير متصل",
-                        style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        if (connected) "متصل" else "غير متصل",
+                        style = MaterialTheme.typography.titleLarge
+                    )
                     Spacer(Modifier.height(8.dp))
                     Text("IP الحقيقي: $realIp")
                     Text("IP البروكسي: $proxyIp")
@@ -75,7 +92,9 @@ class MainActivity : ComponentActivity() {
                     Button(
                         onClick = {
                             if (connected) {
-                                disconnect(); connected = false; proxyIp = "-"
+                                disconnect()
+                                connected = false
+                                proxyIp = "-"
                             } else {
                                 store.save(cfg)
                                 connect()
@@ -106,6 +125,11 @@ class MainActivity : ComponentActivity() {
                         label = { Text("DNS") }, modifier = Modifier.fillMaxWidth())
                 }
             }
+
+            OutlinedButton(
+                onClick = { showApps = true },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("استثناء التطبيقات (${cfg.excluded.size})") }
 
             Button(
                 onClick = {
