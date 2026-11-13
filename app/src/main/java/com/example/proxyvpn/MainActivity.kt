@@ -100,7 +100,9 @@ class MainActivity : ComponentActivity() {
                                 connect()
                                 connected = true
                                 scope.launch {
-                                    proxyIp = withContext(Dispatchers.IO) { Net.publicIp() } ?: "فشل"
+                                    proxyIp = withContext(Dispatchers.IO) {
+                                        Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass) ?: "فشل"
+                                    }
                                 }
                             }
                         },
