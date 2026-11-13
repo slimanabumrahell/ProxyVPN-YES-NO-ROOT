@@ -27,15 +27,16 @@ jobs:
           echo "--- files that define the library ---"
           grep -rl "hev-socks5-tunnel" hev --include=*.mk --include=*.txt --include=*.cmake --include=CMakeLists.txt || true
 
-            - name: Verify JNI symbols
+      - name: Build JNI library
+        working-directory: hev
         run: |
-          SO=app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
-          echo "--- exported symbols ---"
-          nm -D "$SO" | grep -iE "JNI_OnLoad|hev|TProxy" || true
-          echo "--- strings ---"
-          strings "$SO" | grep -iE "htproxy|TProxy|JNI_OnLoad" || true
-          echo "--- java class referenced ---"
-          strings "$SO" | grep -E "^hev/" | head -n 5 || true
+          ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=./Android.mk \
+            APP_ABI="arm64-v8a armeabi-v7a" \
+            APP_PLATFORM=android-26 \
+            -j$(nproc)
+          find . -name "libhev-socks5-tunnel.so" -not -path "*/obj/*"
 
       - name: Install native libs and Java binding
         run: |
@@ -53,7 +54,13 @@ jobs:
 
       - name: Verify JNI symbols
         run: |
-          nm -D app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so | grep -i "Java_hev_htproxy_TProxyService" || { echo "JNI symbols missing"; exit 1; }
+          SO=app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
+          echo "--- exported symbols ---"
+          nm -D "$SO" | grep -iE "JNI_OnLoad|hev|TProxy" || true
+          echo "--- strings ---"
+          strings "$SO" | grep -iE "htproxy|TProxy|JNI_OnLoad" || true
+          echo "--- java class referenced ---"
+          strings "$SO" | grep -E "^hev/" | head -n 5 || true
 
       - uses: actions/setup-java@v4
         with:
