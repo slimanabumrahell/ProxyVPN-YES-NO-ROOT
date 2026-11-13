@@ -18,24 +18,36 @@ jobs:
         with:
           ndk-version: r26d
 
-      - name: Build JNI library
+      - name: Locate native build files
         run: |
-          MK=$(find hev -name Android.mk | head -n 1)
-          echo "Android.mk: $MK"
-          DIR=$(dirname "$MK")
-          ndk-build -C "$DIR" NDK_PROJECT_PATH="$DIR" APP_ABI="arm64-v8a armeabi-v7a" -j$(nproc)
-          find hev -name "libhev-socks5-tunnel.so" -path "*/obj/*" -o -path "*/libs/*" | head -n 20
+          echo "--- top level ---"
+          ls -la hev
+          echo "--- all Android.mk ---"
+          find hev -name "Android.mk" -not -path "*/third-part/*"
+          echo "--- files that define the library ---"
+          grep -rl "hev-socks5-tunnel" hev --include=*.mk --include=*.txt --include=*.cmake --include=CMakeLists.txt || true
+
+      - name: Build JNI library
+        working-directory: hev
+        run: |
+          ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=./Android.mk \
+            APP_ABI="arm64-v8a armeabi-v7a" \
+            APP_PLATFORM=android-26 \
+            -j$(nproc)
+          find . -name "libhev-socks5-tunnel.so" -not -path "*/obj/*"
 
       - name: Install native libs and Java binding
         run: |
           set -e
           for ABI in arm64-v8a armeabi-v7a; do
-            SO=$(find hev -name "libhev-socks5-tunnel.so" -path "*${ABI}*" | head -n 1)
+            SO=$(find hev/libs/$ABI -name "libhev-socks5-tunnel.so" | head -n 1)
             test -n "$SO" || { echo "missing $ABI .so"; exit 1; }
             mkdir -p app/src/main/jniLibs/$ABI
             cp "$SO" app/src/main/jniLibs/$ABI/libhev-socks5-tunnel.so
           done
-          JAVA=$(find hev -name TProxyService.java | head -n 1)
+          JAVA=$(find hev -name TProxyService.java -not -path "*/third-part/*" | head -n 1)
           test -n "$JAVA" || { echo "TProxyService.java not found"; exit 1; }
           mkdir -p app/src/main/java/hev/htproxy
           cp "$JAVA" app/src/main/java/hev/htproxy/TProxyService.java
