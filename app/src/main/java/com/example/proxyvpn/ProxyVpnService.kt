@@ -30,14 +30,26 @@ class ProxyVpnService : VpnService() {
         cfg = c
         startForeground(NOTIF_ID, buildNotification("جاري الاتصال عبر ${c.host}:${c.port}"))
 
-        tun = Builder()
+        val builder = Builder()
             .setSession("ProxyVPN")
             .setMtu(8500)
             .addAddress("10.0.0.2", 32)
             .addRoute("0.0.0.0", 0)
             .addDnsServer(c.dns)
-            .addDisallowedApplication(packageName)
-            .establish()
+
+        // التطبيق نفسه يتجاوز النفق عشان سوكيت البروكسي ما يدخل فيه
+        builder.addDisallowedApplication(packageName)
+
+        // التطبيقات المستثناة من المستخدم (لو مش مثبتة نتجاهلها)
+        c.excluded.forEach { pkg ->
+            try {
+                builder.addDisallowedApplication(pkg)
+            } catch (_: Exception) {
+                // التطبيق مش موجود حالياً
+            }
+        }
+
+        tun = builder.establish()
 
         if (tun == null) {
             shutdown()
