@@ -21,6 +21,7 @@ class ProxyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             shutdown()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -53,6 +54,7 @@ class ProxyVpnService : VpnService() {
 
         if (tun == null) {
             shutdown()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -66,6 +68,7 @@ class ProxyVpnService : VpnService() {
         worker = Thread {
             while (running) {
                 val reachable = proxyReachable(c)
+                if (!running) break
                 if (reachable && !tunnelUp) {
                     startTunnelNow(c)
                 } else if (!reachable && tunnelUp) {
@@ -84,6 +87,7 @@ class ProxyVpnService : VpnService() {
     }
 
     private fun startTunnelNow(c: ProxyConfig) {
+        if (!running) return
         val t = tun ?: return
         // نعطي hev نسخة مستقلة من الـ fd، فإغلاقها ما يسكّر الواجهة الأصلية
         val rawFd = t.dup().detachFd()
@@ -100,16 +104,17 @@ class ProxyVpnService : VpnService() {
     }
 
     private fun stopTunnelNow() {
-        TunnelBridge.stop()
+        try { TunnelBridge.stop() } catch (_: Throwable) {}
         tunnelUp = false
     }
 
     private fun shutdown() {
+        // أولاً أوقف الـ watchdog حتى ما يعيد تشغيل النفق
         running = false
         worker?.interrupt()
         worker = null
         stopTunnelNow()
-        tun?.close()
+        try { tun?.close() } catch (_: Exception) {}
         tun = null
     }
 
@@ -128,6 +133,7 @@ class ProxyVpnService : VpnService() {
     }
 
     private fun updateNotification(text: String) {
+        if (!running) return
         getSystemService(NotificationManager::class.java)
             .notify(NOTIF_ID, buildNotification(text))
     }
