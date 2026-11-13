@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -41,7 +42,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun disconnect() {
-        // أرسل أمر الإيقاف للخدمة، وبعدها أوقفها مباشرة كخطة احتياطية
         startService(
             Intent(this, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_STOP)
         )
@@ -52,11 +52,25 @@ class MainActivity : ComponentActivity() {
     private fun Screen() {
         val store = remember { ProxyStore(this) }
         var cfg by remember { mutableStateOf(store.load()) }
-        var connected by remember { mutableStateOf(false) }
         var showApps by remember { mutableStateOf(false) }
         var realIp by remember { mutableStateOf("...") }
         var proxyIp by remember { mutableStateOf("-") }
         val scope = rememberCoroutineScope()
+
+        // حالة الخدمة الفعلية (تتحدث تلقائياً من الخدمة)
+        val vpn by ProxyVpnService.state.collectAsState()
+        val connected = vpn.active
+
+        // عند ما يصير النفق جاهز نحسب IP البروكسي، وعند الانقطاع نمسحه
+        LaunchedEffect(vpn.tunnelUp) {
+            proxyIp = if (vpn.tunnelUp) {
+                withContext(Dispatchers.IO) {
+                    Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
+                } ?: "فشل"
+            } else {
+                "-"
+            }
+        }
 
         if (showApps) {
             AppsScreen(
@@ -95,17 +109,9 @@ class MainActivity : ComponentActivity() {
                         onClick = {
                             if (connected) {
                                 disconnect()
-                                connected = false
-                                proxyIp = "-"
                             } else {
                                 store.save(cfg)
                                 connect()
-                                connected = true
-                                scope.launch {
-                                    proxyIp = withContext(Dispatchers.IO) {
-                                        Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass) ?: "فشل"
-                                    }
-                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
