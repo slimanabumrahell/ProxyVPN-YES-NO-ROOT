@@ -9,7 +9,8 @@ data class ProxyConfig(
     val port: Int = 1080,
     val user: String = "",
     val pass: String = "",
-    val dns: String = "1.1.1.1"
+    val dns: String = "1.1.1.1",
+    val excluded: Set<String> = emptySet()
 )
 
 class ProxyStore(context: Context) {
@@ -26,7 +27,8 @@ class ProxyStore(context: Context) {
         port = prefs.getInt("port", 1080),
         user = prefs.getString("user", "") ?: "",
         pass = prefs.getString("pass", "") ?: "",
-        dns = prefs.getString("dns", "1.1.1.1") ?: "1.1.1.1"
+        dns = prefs.getString("dns", "1.1.1.1") ?: "1.1.1.1",
+        excluded = prefs.getStringSet("excluded", emptySet())?.toSet() ?: emptySet()
     )
 
     fun save(c: ProxyConfig) {
@@ -36,6 +38,7 @@ class ProxyStore(context: Context) {
             .putString("user", c.user)
             .putString("pass", c.pass)
             .putString("dns", c.dns)
+            .putStringSet("excluded", c.excluded)
             .apply()
     }
 }
