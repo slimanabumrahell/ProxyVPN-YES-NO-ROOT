@@ -12,6 +12,7 @@ import java.net.Socket
 class ProxyVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
+    private var hevPfd: ParcelFileDescriptor? = null
     private var worker: Thread? = null
     private var cfg: ProxyConfig? = null
 
@@ -89,11 +90,12 @@ class ProxyVpnService : VpnService() {
     private fun startTunnelNow(c: ProxyConfig) {
         if (!running) return
         val t = tun ?: return
-        // نعطي hev نسخة مستقلة من الـ fd، فإغلاقها ما يسكّر الواجهة الأصلية
-        val rawFd = t.dup().detachFd()
+        // نعطي hev نسخة مستقلة من الـ fd، ونحتفظ بها عشان نغلقها بأنفسنا
+        val dupPfd = t.dup()
+        hevPfd = dupPfd
         TunnelBridge.start(
             configDir = cacheDir,
-            tunFd = rawFd,
+            tunFd = dupPfd.fd,
             host = c.host,
             port = c.port,
             user = c.user,
@@ -106,6 +108,9 @@ class ProxyVpnService : VpnService() {
     private fun stopTunnelNow() {
         try { TunnelBridge.stop() } catch (_: Throwable) {}
         tunnelUp = false
+        // نغلق نسخة hev بعد إيقاف المكتبة
+        try { hevPfd?.close() } catch (_: Exception) {}
+        hevPfd = null
     }
 
     private fun shutdown() {
@@ -114,6 +119,7 @@ class ProxyVpnService : VpnService() {
         worker?.interrupt()
         worker = null
         stopTunnelNow()
+        // إغلاق الواجهة الأصلية نهائياً
         try { tun?.close() } catch (_: Exception) {}
         tun = null
     }
