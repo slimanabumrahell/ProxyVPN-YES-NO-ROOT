@@ -20,11 +20,14 @@ object RootTunnel {
     private const val DIR = "/data/local/tmp"
     private const val BIN = "$DIR/hevtun"
     private const val GOST_BIN = "$DIR/gost"
+    private const val DNS_BIN = "$DIR/dnsproxy"
     private const val CONF = "$DIR/hevtun.yml"
     private const val LOG = "$DIR/hevtun.log"
     private const val GOST_LOG = "$DIR/gost.log"
+    private const val DNS_LOG = "$DIR/dnsproxy.log"
     private const val PID = "$DIR/hevtun.pid"
     private const val GOST_PID = "$DIR/gost.pid"
+    private const val DNS_PID = "$DIR/dnsproxy.pid"
     private const val STOP = "$DIR/proxyvpn_stop.sh"
     private const val START = "$DIR/proxyvpn_start.sh"
     private const val TUN = "tun0"
@@ -33,6 +36,7 @@ object RootTunnel {
     private const val CHAIN = "PROXYVPN"
     private const val FW_CHAIN = "PROXYVPN_FW"
     private const val LOCAL_PORT = 1081
+    private const val DNS_PORT = 5353
 
     private fun su(cmd: String): Pair<Int, String> {
         val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
@@ -68,6 +72,11 @@ object RootTunnel {
         val auth = if (c.user.isNotEmpty()) "${enc(c.user)}:${enc(c.pass)}@" else ""
         return "-L socks5://127.0.0.1:$LOCAL_PORT -F $scheme://$auth${c.host}:${c.port}"
     }
+
+    // dnsproxy: يستقبل DNS محلياً ويرسله DoH عبر SOCKS5 المحلي (gost)، فلا يتسرب UDP
+    private fun dnsArgs(): String =
+        "-l 127.0.0.1 -p $DNS_PORT -u https://1.1.1.1/dns-query " +
+            "--socks5-proxy socks5://127.0.0.1:$LOCAL_PORT"
 
     // ---------- كشف تلقائي لنوع البروكسي ----------
 
@@ -177,10 +186,13 @@ object RootTunnel {
         appendLine("#!/system/bin/sh")
         appendLine("if [ -f $PID ]; then kill \$(cat $PID) 2>/dev/null; rm -f $PID; fi")
         appendLine("if [ -f $GOST_PID ]; then kill \$(cat $GOST_PID) 2>/dev/null; rm -f $GOST_PID; fi")
+        appendLine("if [ -f $DNS_PID ]; then kill \$(cat $DNS_PID) 2>/dev/null; rm -f $DNS_PID; fi")
         appendLine("sleep 1")
         appendLine("ip rule del pref 10000 2>/dev/null")
         appendLine("ip rule del pref 10010 2>/dev/null")
         appendLine("ip route flush table $TABLE 2>/dev/null")
+        appendLine("iptables -t nat -D OUTPUT -p udp --dport 53 -m owner ! --uid-owner 0 -j REDIRECT --to-ports $DNS_PORT 2>/dev/null")
+        appendLine("iptables -t nat -D OUTPUT -p tcp --dport 53 -m owner ! --uid-owner 0 -j REDIRECT --to-ports $DNS_PORT 2>/dev/null")
         appendLine("iptables -t mangle -D OUTPUT -j $CHAIN 2>/dev/null")
         appendLine("iptables -t mangle -F $CHAIN 2>/dev/null")
         appendLine("iptables -t mangle -X $CHAIN 2>/dev/null")
@@ -195,12 +207,18 @@ object RootTunnel {
         appendLine("#!/system/bin/sh")
         appendLine("sh $STOP >/dev/null 2>&1")
         appendLine("cp $nlib/libgost.so $GOST_BIN && chmod 755 $GOST_BIN || exit 1")
+        appendLine("cp $nlib/libdnsproxy.so $DNS_BIN && chmod 755 $DNS_BIN || exit 1")
         appendLine("cp $nlib/libhevtun.so $BIN && chmod 755 $BIN || exit 1")
         // gost أولاً (يعمل كـ root فيستثنى من التوجيه)
         appendLine("$GOST_BIN $gostArgs >$GOST_LOG 2>&1 &")
         appendLine("echo \$! > $GOST_PID")
         appendLine("sleep 2")
         appendLine("if [ ! -d /proc/\$(cat $GOST_PID) ]; then echo GOSTFAIL; exit 1; fi")
+        // dnsproxy بعد gost (يعمل كـ root أيضاً فيستثنى من التوجيه)
+        appendLine("$DNS_BIN ${dnsArgs()} >$DNS_LOG 2>&1 &")
+        appendLine("echo \$! > $DNS_PID")
+        appendLine("sleep 1")
+        appendLine("if [ ! -d /proc/\$(cat $DNS_PID) ]; then echo DNSFAIL; exit 1; fi")
         // ثم hev
         appendLine("$BIN $CONF >$LOG 2>&1 &")
         appendLine("echo \$! > $PID")
@@ -214,6 +232,9 @@ object RootTunnel {
         uids.forEach { appendLine("iptables -t mangle -A $CHAIN -m owner --uid-owner $it -j RETURN") }
         appendLine("iptables -t mangle -A $CHAIN -j MARK --set-mark $MARK")
         appendLine("iptables -t mangle -A OUTPUT -j $CHAIN")
+        // توجيه DNS من التطبيقات إلى dnsproxy المحلي
+        appendLine("iptables -t nat -A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 0 -j REDIRECT --to-ports $DNS_PORT")
+        appendLine("iptables -t nat -A OUTPUT -p tcp --dport 53 -m owner ! --uid-owner 0 -j REDIRECT --to-ports $DNS_PORT")
         appendLine("iptables -N $FW_CHAIN")
         appendLine("iptables -A $FW_CHAIN -m mark --mark $MARK ! -o $TUN ! -o lo ! -d 192.168.0.0/16 -j REJECT")
         appendLine("iptables -A OUTPUT -j $FW_CHAIN")
@@ -255,12 +276,17 @@ object RootTunnel {
         active.value = ok
         if (ok) {
             val label = if (c.autoDetect) "النوع المكتشف: ${detected.uppercase()}" else "النوع: ${detected.uppercase()}"
-            status.value = "وضع الروت شغّال ($label) · $udpNote"
+            status.value = "وضع الروت شغّال ($label) · $udpNote · DNS عبر DoH"
             ctx.startForegroundService(Intent(ctx, RootService::class.java))
         } else {
-            val gostLog = su("tail -n 3 $GOST_LOG 2>/dev/null").second.trim()
-            val reason = if (out.contains("GOSTFAIL")) "gost ما اشتغل" else out.takeLast(120)
-            status.value = "فشل: $reason" + if (gostLog.isNotEmpty()) "\ngost: ${gostLog.takeLast(160)}" else ""
+            val reason = when {
+                out.contains("GOSTFAIL") -> "gost ما اشتغل"
+                out.contains("DNSFAIL") -> "dnsproxy ما اشتغل"
+                else -> out.takeLast(120)
+            }
+            val logName = if (out.contains("DNSFAIL")) DNS_LOG else GOST_LOG
+            val log = su("tail -n 3 $logName 2>/dev/null").second.trim()
+            status.value = "فشل: $reason" + if (log.isNotEmpty()) "\nlog: ${log.takeLast(160)}" else ""
         }
         return ok
     }
