@@ -71,6 +71,18 @@ jobs:
           mv gost app/src/main/jniLibs/arm64-v8a/libgost.so
           ls -la app/src/main/jniLibs/arm64-v8a/
 
+      - name: Download dnsproxy binary
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          curl -fsSL -o dnsproxy.tar.gz \
+            "https://github.com/AdguardTeam/dnsproxy/releases/download/v0.86.0/dnsproxy-linux-arm64-v0.86.0.tar.gz"
+          mkdir -p dnsx
+          tar -xzf dnsproxy.tar.gz -C dnsx
+          BIN=$(find dnsx -type f -name dnsproxy | head -n 1)
+          test -n "$BIN" || { echo "dnsproxy not found in archive"; exit 1; }
+          cp "$BIN" app/src/main/jniLibs/arm64-v8a/libdnsproxy.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
