@@ -1,6 +1,7 @@
 package com.example.proxyvpn
 
 import android.content.Context
+import android.content.Intent
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 
@@ -102,6 +103,7 @@ object RootTunnel {
         val ok = code == 0 && out.contains("OK")
         active.value = ok
         status.value = if (ok) "وضع الروت شغّال" else "فشل: ${out.takeLast(200)}"
+        if (ok) ctx.startForegroundService(Intent(ctx, RootService::class.java))
         return ok
     }
 
@@ -110,6 +112,7 @@ object RootTunnel {
         val (code, out) = su("cp ${stopF.absolutePath} $STOP && sh $STOP")
         active.value = false
         status.value = if (code == 0) "متوقف، تم استرجاع الإعدادات" else "تحذير: ${out.takeLast(200)}"
+        ctx.stopService(Intent(ctx, RootService::class.java))
         return code == 0
     }
 }
