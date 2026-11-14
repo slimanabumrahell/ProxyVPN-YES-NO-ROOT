@@ -12,7 +12,8 @@ data class ProxyConfig(
     val dns: String = "1.1.1.1",
     val excluded: Set<String> = emptySet(),
     val mode: String = "vpn", // "vpn" أو "root"
-    val type: String = "socks5" // socks5 | socks4 | http | https
+    val type: String = "socks5", // socks5 | socks4 | http | https
+    val autoDetect: Boolean = false // كشف تلقائي للنوع (SOCKS5 / SOCKS4 / HTTP)
 )
 
 class ProxyStore(context: Context) {
@@ -32,7 +33,8 @@ class ProxyStore(context: Context) {
         dns = prefs.getString("dns", "1.1.1.1") ?: "1.1.1.1",
         excluded = prefs.getStringSet("excluded", emptySet())?.toSet() ?: emptySet(),
         mode = prefs.getString("mode", "vpn") ?: "vpn",
-        type = prefs.getString("type", "socks5") ?: "socks5"
+        type = prefs.getString("type", "socks5") ?: "socks5",
+        autoDetect = prefs.getBoolean("autoDetect", false)
     )
 
     fun save(c: ProxyConfig) {
@@ -45,6 +47,7 @@ class ProxyStore(context: Context) {
             .putStringSet("excluded", c.excluded)
             .putString("mode", c.mode)
             .putString("type", c.type)
+            .putBoolean("autoDetect", c.autoDetect)
             .apply()
     }
 }
