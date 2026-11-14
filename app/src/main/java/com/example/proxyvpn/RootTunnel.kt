@@ -41,7 +41,8 @@ object RootTunnel {
     }
 
     // hev يتصل دائماً بـ gost المحلي كـ SOCKS5 بدون مصادقة
-    private fun yml(): String = buildString {
+    // udpOn يحدد إذا UDP مفعّل أو TCP فقط
+    private fun yml(udpOn: Boolean): String = buildString {
         appendLine("tunnel:")
         appendLine("  name: $TUN")
         appendLine("  mtu: 8500")
@@ -49,7 +50,7 @@ object RootTunnel {
         appendLine("socks5:")
         appendLine("  address: 127.0.0.1")
         appendLine("  port: $LOCAL_PORT")
-        appendLine("  udp: 'udp'")
+        appendLine("  udp: '${if (udpOn) "udp" else "tcp"}'")
         appendLine("misc:")
         appendLine("  log-level: warn")
     }
@@ -117,6 +118,40 @@ object RootTunnel {
         return if (isHttp) "http" else null
     }
 
+    // يتحقق إذا SOCKS5 يدعم UDP ASSOCIATE
+    fun probeUdp(host: String, port: Int, user: String, pass: String): Boolean =
+        try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(host, port), 5000)
+                s.soTimeout = 5000
+                val o = s.getOutputStream()
+                val i = s.getInputStream()
+                // greeting: user/pass إذا موجود، وإلا بدون مصادقة
+                if (user.isNotEmpty()) o.write(byteArrayOf(5, 2, 0, 2))
+                else o.write(byteArrayOf(5, 1, 0))
+                o.flush()
+                val g = ByteArray(2); readFully(i, g)
+                if (g[0] != 5.toByte()) return@use false
+                if (g[1] == 2.toByte()) {
+                    val u = user.toByteArray(); val p = pass.toByteArray()
+                    val auth = ByteArray(3 + u.size + p.size)
+                    auth[0] = 1; auth[1] = u.size.toByte()
+                    System.arraycopy(u, 0, auth, 2, u.size)
+                    auth[2 + u.size] = p.size.toByte()
+                    System.arraycopy(p, 0, auth, 3 + u.size, p.size)
+                    o.write(auth); o.flush()
+                    val ar = ByteArray(2); readFully(i, ar)
+                    if (ar[1] != 0.toByte()) return@use false
+                }
+                // UDP ASSOCIATE (cmd=3) إلى 0.0.0.0:0
+                o.write(byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); o.flush()
+                val rep = ByteArray(4); readFully(i, rep)
+                rep[1] == 0.toByte()
+            }
+        } catch (_: Exception) {
+            false
+        }
+
     private fun stopScript(): String = buildString {
         appendLine("#!/system/bin/sh")
         appendLine("if [ -f $PID ]; then kill \$(cat $PID) 2>/dev/null; rm -f $PID; fi")
@@ -135,7 +170,7 @@ object RootTunnel {
         appendLine("echo STOPPED")
     }
 
-    private fun startScript(nlib: String, uids: List<Int>, gostArgs: String): String = buildString {
+    private fun startScript(nlib: String, uids: List<Int>, gostArgs: String, udpOn: Boolean): String = buildString {
         appendLine("#!/system/bin/sh")
         appendLine("sh $STOP >/dev/null 2>&1")
         appendLine("cp $nlib/libgost.so $GOST_BIN && chmod 755 $GOST_BIN || exit 1")
@@ -178,14 +213,18 @@ object RootTunnel {
         } else c.type
         val eff = c.copy(type = detected)
 
+        // UDP تلقائي: فقط إذا SOCKS5 والبروكسي يرد على UDP ASSOCIATE
+        val udpOn = detected == "socks5" && probeUdp(c.host, c.port, c.user, c.pass)
+        val udpNote = if (udpOn) "UDP مفعّل" else "UDP غير مدعوم بهذا البروكسي"
+
         val uids = c.excluded.mapNotNull { pkg ->
             try { ctx.packageManager.getApplicationInfo(pkg, 0).uid } catch (_: Exception) { null }
         }
         val dir = ctx.cacheDir
-        val cfgF = File(dir, "hevtun.yml").apply { writeText(yml()) }
+        val cfgF = File(dir, "hevtun.yml").apply { writeText(yml(udpOn)) }
         val stopF = File(dir, "stop.sh").apply { writeText(stopScript()) }
         val startF = File(dir, "start.sh").apply {
-            writeText(startScript(ctx.applicationInfo.nativeLibraryDir, uids, gostArgs(eff)))
+            writeText(startScript(ctx.applicationInfo.nativeLibraryDir, uids, gostArgs(eff), udpOn))
         }
         val (code, out) = su(
             "cp ${cfgF.absolutePath} $CONF && cp ${stopF.absolutePath} $STOP && " +
@@ -195,7 +234,7 @@ object RootTunnel {
         active.value = ok
         if (ok) {
             val label = if (c.autoDetect) "النوع المكتشف: ${detected.uppercase()}" else "النوع: ${detected.uppercase()}"
-            status.value = "وضع الروت شغّال ($label)"
+            status.value = "وضع الروت شغّال ($label) · $udpNote"
             ctx.startForegroundService(Intent(ctx, RootService::class.java))
         } else {
             val gostLog = su("tail -n 3 $GOST_LOG 2>/dev/null").second.trim()
