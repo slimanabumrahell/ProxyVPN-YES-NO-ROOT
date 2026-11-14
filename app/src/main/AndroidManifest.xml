@@ -29,5 +29,10 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".RootService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false" />
     </application>
 </manifest>
