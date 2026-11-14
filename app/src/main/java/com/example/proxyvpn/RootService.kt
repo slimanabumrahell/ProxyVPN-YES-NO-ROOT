@@ -22,16 +22,11 @@ class RootService : Service() {
     }
 
     private fun stopRoot() {
-        val cfg = ProxyStore(this).load()
         Thread {
             RootTunnel.stop(this)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }.start()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
     }
 
     private fun buildNotification(text: String): Notification {
@@ -52,7 +47,9 @@ class RootService : Service() {
             .setOngoing(true)
             .addAction(
                 Notification.Action.Builder(
-                    null, "قطع الاتصال", stopIntent
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    "قطع الاتصال",
+                    stopIntent
                 ).build()
             )
             .build()
