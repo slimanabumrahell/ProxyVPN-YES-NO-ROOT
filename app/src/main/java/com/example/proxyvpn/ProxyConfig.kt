@@ -11,7 +11,8 @@ data class ProxyConfig(
     val pass: String = "",
     val dns: String = "1.1.1.1",
     val excluded: Set<String> = emptySet(),
-    val mode: String = "vpn" // "vpn" أو "root"
+    val mode: String = "vpn", // "vpn" أو "root"
+    val type: String = "socks5" // socks5 | socks4 | http | https
 )
 
 class ProxyStore(context: Context) {
@@ -30,7 +31,8 @@ class ProxyStore(context: Context) {
         pass = prefs.getString("pass", "") ?: "",
         dns = prefs.getString("dns", "1.1.1.1") ?: "1.1.1.1",
         excluded = prefs.getStringSet("excluded", emptySet())?.toSet() ?: emptySet(),
-        mode = prefs.getString("mode", "vpn") ?: "vpn"
+        mode = prefs.getString("mode", "vpn") ?: "vpn",
+        type = prefs.getString("type", "socks5") ?: "socks5"
     )
 
     fun save(c: ProxyConfig) {
@@ -42,6 +44,7 @@ class ProxyStore(context: Context) {
             .putString("dns", c.dns)
             .putStringSet("excluded", c.excluded)
             .putString("mode", c.mode)
+            .putString("type", c.type)
             .apply()
     }
 }
