@@ -91,7 +91,26 @@ object RootTunnel {
             false
         }
 
-    // يرجع "socks5" أو "socks4" أو "http" أو null
+    // فحص HTTPS: اتصال TLS ثم CONNECT، والرد HTTP/1.x يعني بروكسي HTTPS
+    private fun probeHttps(host: String, port: Int): Boolean =
+        try {
+            val factory = javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
+            factory.createSocket().use { raw ->
+                raw.connect(InetSocketAddress(host, port), 5000)
+                val s = raw as javax.net.ssl.SSLSocket
+                s.soTimeout = 5000
+                s.startHandshake()
+                val o = s.outputStream
+                o.write("CONNECT 1.1.1.1:443 HTTP/1.1\r\nHost: 1.1.1.1:443\r\n\r\n".toByteArray())
+                o.flush()
+                val line = BufferedReader(InputStreamReader(s.inputStream)).readLine() ?: ""
+                line.startsWith("HTTP/1")
+            }
+        } catch (_: Exception) {
+            false
+        }
+
+    // يرجع "socks5" أو "socks4" أو "http" أو "https" أو null
     fun detectType(host: String, port: Int): String? {
         val isSocks5 = probe(host, port) { o, i ->
             // greeting: version 5، طريقتين (بدون مصادقة و user/pass)
@@ -115,7 +134,9 @@ object RootTunnel {
             val line = BufferedReader(InputStreamReader(i)).readLine() ?: ""
             line.startsWith("HTTP/1")
         }
-        return if (isHttp) "http" else null
+        if (isHttp) return "http"
+
+        return if (probeHttps(host, port)) "https" else null
     }
 
     // يتحقق إذا SOCKS5 يدعم UDP ASSOCIATE
@@ -207,7 +228,7 @@ object RootTunnel {
         val detected: String = if (c.autoDetect) {
             status.value = "جاري كشف نوع البروكسي..."
             detectType(c.host, c.port) ?: run {
-                status.value = "فشل: ما قدرت أعرف نوع البروكسي (SOCKS5 / SOCKS4 / HTTP)"
+                status.value = "فشل: ما قدرت أعرف نوع البروكسي (SOCKS5 / SOCKS4 / HTTP / HTTPS)"
                 return false
             }
         } else c.type
