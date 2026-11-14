@@ -62,6 +62,15 @@ jobs:
           echo "--- java class referenced ---"
           strings "$SO" | grep -E "^hev/" | head -n 5 || true
 
+      - name: Download gost binary
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          curl -fsSL -o gost.tar.gz \
+            "https://github.com/go-gost/gost/releases/download/v3.3.4/gost_3.3.4_linux_arm64.tar.gz"
+          tar -xzf gost.tar.gz gost
+          mv gost app/src/main/jniLibs/arm64-v8a/libgost.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
