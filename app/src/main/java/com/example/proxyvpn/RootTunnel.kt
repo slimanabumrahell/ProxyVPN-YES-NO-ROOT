@@ -3,7 +3,14 @@ package com.example.proxyvpn
 import android.content.Context
 import android.content.Intent
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.BufferedReader
+import java.io.EOFException
 import java.io.File
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URLEncoder
 
 object RootTunnel {
@@ -49,7 +56,7 @@ object RootTunnel {
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
-    // gost: يستقبل SOCKS5 محلي ويحوّله للبروكسي الحقيقي بالنوع المختار
+    // gost: يستقبل SOCKS5 محلي ويحوّله للبروكسي الحقيقي بالنوع المستعمل
     private fun gostArgs(c: ProxyConfig): String {
         val scheme = when (c.type) {
             "socks4" -> "socks4"
@@ -59,6 +66,55 @@ object RootTunnel {
         }
         val auth = if (c.user.isNotEmpty()) "${enc(c.user)}:${enc(c.pass)}@" else ""
         return "-L socks5://127.0.0.1:$LOCAL_PORT -F $scheme://$auth${c.host}:${c.port}"
+    }
+
+    // ---------- كشف تلقائي لنوع البروكسي ----------
+
+    private fun readFully(i: InputStream, buf: ByteArray) {
+        var off = 0
+        while (off < buf.size) {
+            val n = i.read(buf, off, buf.size - off)
+            if (n < 0) throw EOFException()
+            off += n
+        }
+    }
+
+    private fun probe(host: String, port: Int, check: (OutputStream, InputStream) -> Boolean): Boolean =
+        try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(host, port), 5000)
+                s.soTimeout = 5000
+                check(s.getOutputStream(), s.getInputStream())
+            }
+        } catch (_: Exception) {
+            false
+        }
+
+    // يرجع "socks5" أو "socks4" أو "http" أو null
+    fun detectType(host: String, port: Int): String? {
+        val isSocks5 = probe(host, port) { o, i ->
+            // greeting: version 5، طريقتين (بدون مصادقة و user/pass)
+            o.write(byteArrayOf(5, 2, 0, 2)); o.flush()
+            val r = ByteArray(2); readFully(i, r)
+            r[0] == 5.toByte()
+        }
+        if (isSocks5) return "socks5"
+
+        val isSocks4 = probe(host, port) { o, i ->
+            // CONNECT إلى 1.1.1.1:80 بنسخة SOCKS4
+            o.write(byteArrayOf(4, 1, 0, 80, 1, 1, 1, 1, 0)); o.flush()
+            val r = ByteArray(8); readFully(i, r)
+            r[0] == 0.toByte()
+        }
+        if (isSocks4) return "socks4"
+
+        val isHttp = probe(host, port) { o, i ->
+            o.write("CONNECT 1.1.1.1:443 HTTP/1.1\r\nHost: 1.1.1.1:443\r\n\r\n".toByteArray())
+            o.flush()
+            val line = BufferedReader(InputStreamReader(i)).readLine() ?: ""
+            line.startsWith("HTTP/1")
+        }
+        return if (isHttp) "http" else null
     }
 
     private fun stopScript(): String = buildString {
@@ -111,6 +167,17 @@ object RootTunnel {
 
     fun start(ctx: Context, c: ProxyConfig): Boolean {
         status.value = "جاري تشغيل وضع الروت..."
+
+        // إذا الكشف التلقائي مفعّل، نحدد النوع قبل تشغيل أي شي
+        val detected: String = if (c.autoDetect) {
+            status.value = "جاري كشف نوع البروكسي..."
+            detectType(c.host, c.port) ?: run {
+                status.value = "فشل: ما قدرت أعرف نوع البروكسي (SOCKS5 / SOCKS4 / HTTP)"
+                return false
+            }
+        } else c.type
+        val eff = c.copy(type = detected)
+
         val uids = c.excluded.mapNotNull { pkg ->
             try { ctx.packageManager.getApplicationInfo(pkg, 0).uid } catch (_: Exception) { null }
         }
@@ -118,7 +185,7 @@ object RootTunnel {
         val cfgF = File(dir, "hevtun.yml").apply { writeText(yml()) }
         val stopF = File(dir, "stop.sh").apply { writeText(stopScript()) }
         val startF = File(dir, "start.sh").apply {
-            writeText(startScript(ctx.applicationInfo.nativeLibraryDir, uids, gostArgs(c)))
+            writeText(startScript(ctx.applicationInfo.nativeLibraryDir, uids, gostArgs(eff)))
         }
         val (code, out) = su(
             "cp ${cfgF.absolutePath} $CONF && cp ${stopF.absolutePath} $STOP && " +
@@ -127,7 +194,8 @@ object RootTunnel {
         val ok = code == 0 && out.contains("OK")
         active.value = ok
         if (ok) {
-            status.value = "وضع الروت شغّال"
+            val label = if (c.autoDetect) "النوع المكتشف: ${detected.uppercase()}" else "النوع: ${detected.uppercase()}"
+            status.value = "وضع الروت شغّال ($label)"
             ctx.startForegroundService(Intent(ctx, RootService::class.java))
         } else {
             val gostLog = su("tail -n 3 $GOST_LOG 2>/dev/null").second.trim()
