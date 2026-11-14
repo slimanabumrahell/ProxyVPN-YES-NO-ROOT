@@ -8,15 +8,17 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.URLEncoder
 
 class ProxyVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
     private var hevPfd: ParcelFileDescriptor? = null
     private var worker: Thread? = null
-    private var cfg: ProxyConfig? = null
+    private var gostProc: Process? = null
 
     @Volatile private var running = false
     @Volatile private var tunnelUp = false
@@ -31,7 +33,6 @@ class ProxyVpnService : VpnService() {
         if (running) return START_STICKY
 
         val c = ProxyStore(this).load()
-        cfg = c
         startForeground(NOTIF_ID, buildNotification("جاري الاتصال عبر ${c.host}:${c.port}"))
 
         val builder = Builder()
@@ -41,20 +42,12 @@ class ProxyVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addDnsServer(c.dns)
 
-        // التطبيق نفسه يتجاوز النفق عشان سوكيت البروكسي ما يدخل فيه
         builder.addDisallowedApplication(packageName)
-
-        // التطبيقات المستثناة من المستخدم (لو مش مثبتة نتجاهلها)
         c.excluded.forEach { pkg ->
-            try {
-                builder.addDisallowedApplication(pkg)
-            } catch (_: Exception) {
-                // التطبيق مش موجود حالياً
-            }
+            try { builder.addDisallowedApplication(pkg) } catch (_: Exception) {}
         }
 
         tun = builder.establish()
-
         if (tun == null) {
             shutdown()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -67,6 +60,37 @@ class ProxyVpnService : VpnService() {
         startWatchdog(c)
         return START_STICKY
     }
+
+    // ---------- gost (محوّل محلي بدون root) ----------
+
+    private fun gostArgs(c: ProxyConfig): String {
+        val scheme = when (c.type) {
+            "socks4" -> "socks4"
+            "http" -> "http"
+            "https" -> "https"
+            else -> "socks5"
+        }
+        val auth = if (c.user.isNotEmpty())
+            "${URLEncoder.encode(c.user, "UTF-8")}:${URLEncoder.encode(c.pass, "UTF-8")}@" else ""
+        return "-L socks5://127.0.0.1:$LOCAL_PORT -F $scheme://$auth${c.host}:${c.port}"
+    }
+
+    private fun startGost(c: ProxyConfig) {
+        stopGost()
+        val bin = File(applicationInfo.nativeLibraryDir, "libgost.so").absolutePath
+        val args = gostArgs(c).split(" ")
+        gostProc = ProcessBuilder(listOf(bin) + args)
+            .redirectErrorStream(true)
+            .redirectOutput(File(cacheDir, "gost.log"))
+            .start()
+    }
+
+    private fun stopGost() {
+        try { gostProc?.destroy() } catch (_: Throwable) {}
+        gostProc = null
+    }
+
+    // ---------- المراقب والنفق ----------
 
     private fun startWatchdog(c: ProxyConfig) {
         worker = Thread {
@@ -93,38 +117,43 @@ class ProxyVpnService : VpnService() {
     private fun startTunnelNow(c: ProxyConfig) {
         if (!running) return
         val t = tun ?: return
-        // نعطي hev نسخة مستقلة من الـ fd، ونحتفظ بها عشان نغلقها بأنفسنا
+
+        // أنواع غير SOCKS5 تمر عبر gost المحلي، وSOCKS5 يتصل مباشرة
+        val local = if (c.type == "socks5") c else {
+            startGost(c)
+            Thread.sleep(1500)
+            c.copy(host = "127.0.0.1", port = LOCAL_PORT, user = "", pass = "")
+        }
+
         val dupPfd = t.dup()
         hevPfd = dupPfd
         TunnelBridge.start(
             configDir = cacheDir,
             tunFd = dupPfd.fd,
-            host = c.host,
-            port = c.port,
-            user = c.user,
-            pass = c.pass
+            host = local.host,
+            port = local.port,
+            user = local.user,
+            pass = local.pass
         )
         tunnelUp = true
         state.update { it.copy(tunnelUp = true) }
-        updateNotification("متصل عبر ${c.host}:${c.port}")
+        updateNotification("متصل عبر ${c.host}:${c.port} (${c.type.uppercase()})")
     }
 
     private fun stopTunnelNow() {
         try { TunnelBridge.stop() } catch (_: Throwable) {}
         tunnelUp = false
         state.update { it.copy(tunnelUp = false) }
-        // نغلق نسخة hev بعد إيقاف المكتبة
         try { hevPfd?.close() } catch (_: Exception) {}
         hevPfd = null
+        stopGost()
     }
 
     private fun shutdown() {
-        // أولاً أوقف الـ watchdog حتى ما يعيد تشغيل النفق
         running = false
         worker?.interrupt()
         worker = null
         stopTunnelNow()
-        // إغلاق الواجهة الأصلية نهائياً
         try { tun?.close() } catch (_: Exception) {}
         tun = null
         state.value = VpnState()
@@ -169,6 +198,7 @@ class ProxyVpnService : VpnService() {
     companion object {
         const val ACTION_STOP = "com.example.proxyvpn.STOP"
         const val NOTIF_ID = 1
+        const val LOCAL_PORT = 1081
         val state = MutableStateFlow(VpnState())
     }
 }
