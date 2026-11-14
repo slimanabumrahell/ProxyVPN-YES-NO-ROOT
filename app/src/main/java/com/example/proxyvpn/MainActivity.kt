@@ -65,12 +65,14 @@ class MainActivity : ComponentActivity() {
         val connected = if (isRoot) rootOn else vpn.active
         val tunnelReady = if (isRoot) rootOn else vpn.tunnelUp
 
+        // في وضع الروت التطبيق ما هو مستثنى، فحركته تمر عبر البروكسي
         LaunchedEffect(tunnelReady, cfg.mode) {
             proxyIp = if (!tunnelReady) {
                 "-"
             } else {
                 withContext(Dispatchers.IO) {
-                    Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
+                    if (isRoot) Net.publicIp()
+                    else Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
                 } ?: "فشل"
             }
         }
@@ -87,6 +89,8 @@ class MainActivity : ComponentActivity() {
             )
             return
         }
+
+        val types = listOf("socks5" to "SOCKS5", "socks4" to "SOCKS4", "http" to "HTTP", "https" to "HTTPS")
 
         Column(
             modifier = Modifier
@@ -158,8 +162,34 @@ class MainActivity : ComponentActivity() {
             }
 
             Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("نوع البروكسي", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (isRoot) "يُستعمل في وضع الروت" else "متاح في وضع الروت فقط حالياً",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    types.forEach { (key, label) ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = cfg.type == key,
+                                enabled = !connected,
+                                onClick = {
+                                    cfg = cfg.copy(type = key)
+                                    store.save(cfg)
+                                }
+                            )
+                            Text(label)
+                        }
+                    }
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("إعدادات SOCKS5", style = MaterialTheme.typography.titleMedium)
+                    Text("إعدادات البروكسي", style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(cfg.host, { cfg = cfg.copy(host = it) },
                         label = { Text("IP / Host") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(cfg.port.toString(),
