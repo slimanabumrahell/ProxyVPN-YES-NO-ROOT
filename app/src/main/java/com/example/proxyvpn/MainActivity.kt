@@ -65,13 +65,16 @@ class MainActivity : ComponentActivity() {
         val connected = if (isRoot) rootOn else vpn.active
         val tunnelReady = if (isRoot) rootOn else vpn.tunnelUp
 
-        LaunchedEffect(tunnelReady, cfg.mode) {
+        LaunchedEffect(tunnelReady, cfg.mode, cfg.type) {
             proxyIp = if (!tunnelReady) {
                 "-"
             } else {
                 withContext(Dispatchers.IO) {
-                    if (isRoot) Net.publicIp()
-                    else Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
+                    when {
+                        isRoot -> Net.publicIp()
+                        cfg.type == "socks5" -> Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
+                        else -> Net.ipViaLocal(ProxyVpnService.LOCAL_PORT)
+                    }
                 } ?: "فشل"
             }
         }
