@@ -162,10 +162,37 @@ class MainActivity : ComponentActivity() {
             }
 
             Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("كشف تلقائي للنوع")
+                        Text(
+                            "يجرّب SOCKS5 ثم SOCKS4 ثم HTTP ويستعمل ما يستجيب",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = cfg.autoDetect,
+                        enabled = !connected,
+                        onCheckedChange = {
+                            cfg = cfg.copy(autoDetect = it)
+                            store.save(cfg)
+                        }
+                    )
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("نوع البروكسي", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        if (isRoot) "يُستعمل في وضع الروت" else "متاح في وضع الروت فقط حالياً",
+                        when {
+                            cfg.autoDetect -> "مُعطّل لأن الكشف التلقائي مفعّل"
+                            isRoot -> "يُستعمل في وضع الروت"
+                            else -> "متاح في وضع الروت فقط حالياً"
+                        },
                         style = MaterialTheme.typography.bodySmall
                     )
                     types.forEach { (key, label) ->
@@ -175,7 +202,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             RadioButton(
                                 selected = cfg.type == key,
-                                enabled = !connected,
+                                enabled = !connected && !cfg.autoDetect,
                                 onClick = {
                                     cfg = cfg.copy(type = key)
                                     store.save(cfg)
