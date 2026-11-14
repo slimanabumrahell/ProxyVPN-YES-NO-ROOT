@@ -40,6 +40,8 @@ object RootTunnel {
         return p.waitFor() to out
     }
 
+    // hev يتصل دائماً بـ gost المحلي كـ SOCKS5 بدون مصادقة
+    // udpOn يحدد إذا UDP مفعّل أو TCP فقط
     private fun yml(udpOn: Boolean): String = buildString {
         appendLine("tunnel:")
         appendLine("  name: $TUN")
@@ -55,6 +57,7 @@ object RootTunnel {
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
+    // gost: يستقبل SOCKS5 محلي ويحوّله للبروكسي الحقيقي بالنوع المستعمل
     private fun gostArgs(c: ProxyConfig): String {
         val scheme = when (c.type) {
             "socks4" -> "socks4"
@@ -65,6 +68,8 @@ object RootTunnel {
         val auth = if (c.user.isNotEmpty()) "${enc(c.user)}:${enc(c.pass)}@" else ""
         return "-L socks5://127.0.0.1:$LOCAL_PORT -F $scheme://$auth${c.host}:${c.port}"
     }
+
+    // ---------- كشف تلقائي لنوع البروكسي ----------
 
     private fun readFully(i: InputStream, buf: ByteArray) {
         var off = 0
@@ -86,6 +91,7 @@ object RootTunnel {
             false
         }
 
+    // فحص HTTPS: اتصال TLS ثم CONNECT، والرد HTTP/1.x يعني بروكسي HTTPS
     private fun probeHttps(host: String, port: Int): Boolean =
         try {
             val factory = javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory
@@ -104,8 +110,10 @@ object RootTunnel {
             false
         }
 
+    // يرجع "socks5" أو "socks4" أو "http" أو "https" أو null
     fun detectType(host: String, port: Int): String? {
         val isSocks5 = probe(host, port) { o, i ->
+            // greeting: version 5، طريقتين (بدون مصادقة و user/pass)
             o.write(byteArrayOf(5, 2, 0, 2)); o.flush()
             val r = ByteArray(2); readFully(i, r)
             r[0] == 5.toByte()
@@ -113,6 +121,7 @@ object RootTunnel {
         if (isSocks5) return "socks5"
 
         val isSocks4 = probe(host, port) { o, i ->
+            // CONNECT إلى 1.1.1.1:80 بنسخة SOCKS4
             o.write(byteArrayOf(4, 1, 0, 80, 1, 1, 1, 1, 0)); o.flush()
             val r = ByteArray(8); readFully(i, r)
             r[0] == 0.toByte()
@@ -130,6 +139,7 @@ object RootTunnel {
         return if (probeHttps(host, port)) "https" else null
     }
 
+    // يتحقق إذا SOCKS5 يدعم UDP ASSOCIATE
     fun probeUdp(host: String, port: Int, user: String, pass: String): Boolean =
         try {
             Socket().use { s ->
@@ -137,6 +147,7 @@ object RootTunnel {
                 s.soTimeout = 5000
                 val o = s.getOutputStream()
                 val i = s.getInputStream()
+                // greeting: user/pass إذا موجود، وإلا بدون مصادقة
                 if (user.isNotEmpty()) o.write(byteArrayOf(5, 2, 0, 2))
                 else o.write(byteArrayOf(5, 1, 0))
                 o.flush()
@@ -153,6 +164,7 @@ object RootTunnel {
                     val ar = ByteArray(2); readFully(i, ar)
                     if (ar[1] != 0.toByte()) return@use false
                 }
+                // UDP ASSOCIATE (cmd=3) إلى 0.0.0.0:0
                 o.write(byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); o.flush()
                 val rep = ByteArray(4); readFully(i, rep)
                 rep[1] == 0.toByte()
@@ -184,10 +196,12 @@ object RootTunnel {
         appendLine("sh $STOP >/dev/null 2>&1")
         appendLine("cp $nlib/libgost.so $GOST_BIN && chmod 755 $GOST_BIN || exit 1")
         appendLine("cp $nlib/libhevtun.so $BIN && chmod 755 $BIN || exit 1")
+        // gost أولاً (يعمل كـ root فيستثنى من التوجيه)
         appendLine("$GOST_BIN $gostArgs >$GOST_LOG 2>&1 &")
         appendLine("echo \$! > $GOST_PID")
         appendLine("sleep 2")
         appendLine("if [ ! -d /proc/\$(cat $GOST_PID) ]; then echo GOSTFAIL; exit 1; fi")
+        // ثم hev
         appendLine("$BIN $CONF >$LOG 2>&1 &")
         appendLine("echo \$! > $PID")
         appendLine("i=0")
@@ -210,6 +224,7 @@ object RootTunnel {
     fun start(ctx: Context, c: ProxyConfig): Boolean {
         status.value = "جاري تشغيل وضع الروت..."
 
+        // إذا الكشف التلقائي مفعّل، نحدد النوع قبل تشغيل أي شي
         val detected: String = if (c.autoDetect) {
             status.value = "جاري كشف نوع البروكسي..."
             detectType(c.host, c.port) ?: run {
@@ -219,6 +234,7 @@ object RootTunnel {
         } else c.type
         val eff = c.copy(type = detected)
 
+        // UDP تلقائي: فقط إذا SOCKS5 والبروكسي يرد على UDP ASSOCIATE
         val udpOn = detected == "socks5" && probeUdp(c.host, c.port, c.user, c.pass)
         val udpNote = if (udpOn) "UDP مفعّل" else "UDP غير مدعوم بهذا البروكسي"
 
@@ -242,9 +258,9 @@ object RootTunnel {
             status.value = "وضع الروت شغّال ($label) · $udpNote"
             ctx.startForegroundService(Intent(ctx, RootService::class.java))
         } else {
-            val log = su("tail -n 3 $GOST_LOG 2>/dev/null").second.trim()
+            val gostLog = su("tail -n 3 $GOST_LOG 2>/dev/null").second.trim()
             val reason = if (out.contains("GOSTFAIL")) "gost ما اشتغل" else out.takeLast(120)
-            status.value = "فشل: $reason" + if (log.isNotEmpty()) "\nlog: ${log.takeLast(160)}" else ""
+            status.value = "فشل: $reason" + if (gostLog.isNotEmpty()) "\ngost: ${gostLog.takeLast(160)}" else ""
         }
         return ok
     }
