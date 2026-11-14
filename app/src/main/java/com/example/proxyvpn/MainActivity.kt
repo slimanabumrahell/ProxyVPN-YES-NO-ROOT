@@ -65,7 +65,6 @@ class MainActivity : ComponentActivity() {
         val connected = if (isRoot) rootOn else vpn.active
         val tunnelReady = if (isRoot) rootOn else vpn.tunnelUp
 
-        // في وضع الروت التطبيق ما هو مستثنى، فحركته تمر عبر البروكسي
         LaunchedEffect(tunnelReady, cfg.mode) {
             proxyIp = if (!tunnelReady) {
                 "-"
@@ -190,8 +189,7 @@ class MainActivity : ComponentActivity() {
                     Text(
                         when {
                             cfg.autoDetect -> "مُعطّل لأن الكشف التلقائي مفعّل"
-                            isRoot -> "يُستعمل في وضع الروت"
-                            else -> "متاح في وضع الروت فقط حالياً"
+                            else -> "يُستعمل لتحديد نوع البروكسي"
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
