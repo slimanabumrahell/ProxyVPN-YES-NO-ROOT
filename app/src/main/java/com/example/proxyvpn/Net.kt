@@ -17,7 +17,7 @@ object Net {
         null
     }
 
-    // IP عبر SOCKS5 (يمر عبر الخادم)
+    // IP عبر SOCKS5 مباشرة (يمر عبر الخادم)
     fun ipViaSocks(host: String, port: Int, user: String, pass: String): String? = try {
         if (user.isNotEmpty()) {
             java.net.Authenticator.setDefault(object : java.net.Authenticator() {
@@ -26,6 +26,17 @@ object Net {
             })
         }
         val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(host, port))
+        val c = URL("https://api.ipify.org").openConnection(proxy) as HttpURLConnection
+        c.connectTimeout = 10_000
+        c.readTimeout = 10_000
+        c.inputStream.bufferedReader().readText().trim()
+    } catch (e: Exception) {
+        null
+    }
+
+    // IP عبر المحوّل المحلي (gost على 127.0.0.1) الذي يحوّل للنوع الصحيح
+    fun ipViaLocal(port: Int): String? = try {
+        val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
         val c = URL("https://api.ipify.org").openConnection(proxy) as HttpURLConnection
         c.connectTimeout = 10_000
         c.readTimeout = 10_000
