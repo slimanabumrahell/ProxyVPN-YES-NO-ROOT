@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
+import java.net.URLEncoder
 
 object RootTunnel {
     val active = MutableStateFlow(false)
@@ -11,9 +12,12 @@ object RootTunnel {
 
     private const val DIR = "/data/local/tmp"
     private const val BIN = "$DIR/hevtun"
+    private const val GOST_BIN = "$DIR/gost"
     private const val CONF = "$DIR/hevtun.yml"
     private const val LOG = "$DIR/hevtun.log"
+    private const val GOST_LOG = "$DIR/gost.log"
     private const val PID = "$DIR/hevtun.pid"
+    private const val GOST_PID = "$DIR/gost.pid"
     private const val STOP = "$DIR/proxyvpn_stop.sh"
     private const val START = "$DIR/proxyvpn_start.sh"
     private const val TUN = "tun0"
@@ -21,6 +25,7 @@ object RootTunnel {
     private const val MARK = "0x2022"
     private const val CHAIN = "PROXYVPN"
     private const val FW_CHAIN = "PROXYVPN_FW"
+    private const val LOCAL_PORT = 1081
 
     private fun su(cmd: String): Pair<Int, String> {
         val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
@@ -28,26 +33,38 @@ object RootTunnel {
         return p.waitFor() to out
     }
 
-    private fun yml(c: ProxyConfig): String = buildString {
+    // hev يتصل دائماً بـ gost المحلي كـ SOCKS5 بدون مصادقة
+    private fun yml(): String = buildString {
         appendLine("tunnel:")
         appendLine("  name: $TUN")
         appendLine("  mtu: 8500")
         appendLine("  ipv4: 198.18.0.1")
         appendLine("socks5:")
-        appendLine("  address: ${c.host}")
-        appendLine("  port: ${c.port}")
+        appendLine("  address: 127.0.0.1")
+        appendLine("  port: $LOCAL_PORT")
         appendLine("  udp: 'udp'")
-        if (c.user.isNotEmpty()) {
-            appendLine("  username: '${c.user.replace("'", "''")}'")
-            appendLine("  password: '${c.pass.replace("'", "''")}'")
-        }
         appendLine("misc:")
         appendLine("  log-level: warn")
+    }
+
+    private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
+    // gost: يستقبل SOCKS5 محلي ويحوّله للبروكسي الحقيقي بالنوع المختار
+    private fun gostArgs(c: ProxyConfig): String {
+        val scheme = when (c.type) {
+            "socks4" -> "socks4"
+            "http" -> "http"
+            "https" -> "https"
+            else -> "socks5"
+        }
+        val auth = if (c.user.isNotEmpty()) "${enc(c.user)}:${enc(c.pass)}@" else ""
+        return "-L socks5://127.0.0.1:$LOCAL_PORT -F $scheme://$auth${c.host}:${c.port}"
     }
 
     private fun stopScript(): String = buildString {
         appendLine("#!/system/bin/sh")
         appendLine("if [ -f $PID ]; then kill \$(cat $PID) 2>/dev/null; rm -f $PID; fi")
+        appendLine("if [ -f $GOST_PID ]; then kill \$(cat $GOST_PID) 2>/dev/null; rm -f $GOST_PID; fi")
         appendLine("sleep 1")
         appendLine("ip rule del pref 10000 2>/dev/null")
         appendLine("ip rule del pref 10010 2>/dev/null")
@@ -62,10 +79,17 @@ object RootTunnel {
         appendLine("echo STOPPED")
     }
 
-    private fun startScript(nlib: String, uids: List<Int>): String = buildString {
+    private fun startScript(nlib: String, uids: List<Int>, gostArgs: String): String = buildString {
         appendLine("#!/system/bin/sh")
         appendLine("sh $STOP >/dev/null 2>&1")
+        appendLine("cp $nlib/libgost.so $GOST_BIN && chmod 755 $GOST_BIN || exit 1")
         appendLine("cp $nlib/libhevtun.so $BIN && chmod 755 $BIN || exit 1")
+        // gost أولاً (يعمل كـ root فيستثنى من التوجيه)
+        appendLine("$GOST_BIN $gostArgs >$GOST_LOG 2>&1 &")
+        appendLine("echo \$! > $GOST_PID")
+        appendLine("sleep 2")
+        appendLine("if [ ! -d /proc/\$(cat $GOST_PID) ]; then echo GOSTFAIL; exit 1; fi")
+        // ثم hev
         appendLine("$BIN $CONF >$LOG 2>&1 &")
         appendLine("echo \$! > $PID")
         appendLine("i=0")
@@ -91,10 +115,10 @@ object RootTunnel {
             try { ctx.packageManager.getApplicationInfo(pkg, 0).uid } catch (_: Exception) { null }
         }
         val dir = ctx.cacheDir
-        val cfgF = File(dir, "hevtun.yml").apply { writeText(yml(c)) }
+        val cfgF = File(dir, "hevtun.yml").apply { writeText(yml()) }
         val stopF = File(dir, "stop.sh").apply { writeText(stopScript()) }
         val startF = File(dir, "start.sh").apply {
-            writeText(startScript(ctx.applicationInfo.nativeLibraryDir, uids))
+            writeText(startScript(ctx.applicationInfo.nativeLibraryDir, uids, gostArgs(c)))
         }
         val (code, out) = su(
             "cp ${cfgF.absolutePath} $CONF && cp ${stopF.absolutePath} $STOP && " +
@@ -102,8 +126,14 @@ object RootTunnel {
         )
         val ok = code == 0 && out.contains("OK")
         active.value = ok
-        status.value = if (ok) "وضع الروت شغّال" else "فشل: ${out.takeLast(200)}"
-        if (ok) ctx.startForegroundService(Intent(ctx, RootService::class.java))
+        if (ok) {
+            status.value = "وضع الروت شغّال"
+            ctx.startForegroundService(Intent(ctx, RootService::class.java))
+        } else {
+            val gostLog = su("tail -n 3 $GOST_LOG 2>/dev/null").second.trim()
+            val reason = if (out.contains("GOSTFAIL")) "gost ما اشتغل" else out.takeLast(120)
+            status.value = "فشل: $reason" + if (gostLog.isNotEmpty()) "\ngost: ${gostLog.takeLast(160)}" else ""
+        }
         return ok
     }
 
