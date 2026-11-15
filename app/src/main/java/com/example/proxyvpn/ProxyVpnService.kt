@@ -56,7 +56,7 @@ class ProxyVpnService : VpnService() {
         }
 
         running = true
-        state.value = VpnState(active = true, tunnelUp = false)
+        state.value = VpnState(active = true, tunnelUp = false, localVia = false)
         startWatchdog(c)
         return START_STICKY
     }
@@ -65,7 +65,7 @@ class ProxyVpnService : VpnService() {
 
     private fun resolveType(c: ProxyConfig): ProxyConfig {
         if (!c.autoDetect) return c
-        val detected = RootTunnel.detectType(c.host, c.port) ?: return c
+        val detected = RootTunnel.detectType(c.host, c.port, c.user, c.pass) ?: return c
         return c.copy(type = detected)
     }
 
@@ -129,7 +129,8 @@ class ProxyVpnService : VpnService() {
         val cc = resolveType(c)
 
         // أنواع غير SOCKS5 تمر عبر gost المحلي، وSOCKS5 يتصل مباشرة
-        val local = if (cc.type == "socks5") cc else {
+        val viaLocal = cc.type != "socks5"
+        val local = if (!viaLocal) cc else {
             startGost(cc)
             Thread.sleep(1500)
             cc.copy(host = "127.0.0.1", port = LOCAL_PORT, user = "", pass = "")
@@ -146,14 +147,14 @@ class ProxyVpnService : VpnService() {
             pass = local.pass
         )
         tunnelUp = true
-        state.update { it.copy(tunnelUp = true) }
+        state.update { it.copy(tunnelUp = true, localVia = viaLocal) }
         updateNotification("متصل عبر ${cc.host}:${cc.port} (${cc.type.uppercase()})")
     }
 
     private fun stopTunnelNow() {
         try { TunnelBridge.stop() } catch (_: Throwable) {}
         tunnelUp = false
-        state.update { it.copy(tunnelUp = false) }
+        state.update { it.copy(tunnelUp = false, localVia = false) }
         try { hevPfd?.close() } catch (_: Exception) {}
         hevPfd = null
         stopGost()
@@ -203,7 +204,11 @@ class ProxyVpnService : VpnService() {
             .build()
     }
 
-    data class VpnState(val active: Boolean = false, val tunnelUp: Boolean = false)
+    data class VpnState(
+        val active: Boolean = false,
+        val tunnelUp: Boolean = false,
+        val localVia: Boolean = false // true إذا التوجيه عبر gost المحلي
+    )
 
     companion object {
         const val ACTION_STOP = "com.example.proxyvpn.STOP"
