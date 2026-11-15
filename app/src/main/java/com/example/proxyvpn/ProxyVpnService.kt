@@ -61,6 +61,14 @@ class ProxyVpnService : VpnService() {
         return START_STICKY
     }
 
+    // ---------- الكشف التلقائي للنوع ----------
+
+    private fun resolveType(c: ProxyConfig): ProxyConfig {
+        if (!c.autoDetect) return c
+        val detected = RootTunnel.detectType(c.host, c.port) ?: return c
+        return c.copy(type = detected)
+    }
+
     // ---------- gost (محوّل محلي بدون root) ----------
 
     private fun gostArgs(c: ProxyConfig): String {
@@ -118,11 +126,13 @@ class ProxyVpnService : VpnService() {
         if (!running) return
         val t = tun ?: return
 
+        val cc = resolveType(c)
+
         // أنواع غير SOCKS5 تمر عبر gost المحلي، وSOCKS5 يتصل مباشرة
-        val local = if (c.type == "socks5") c else {
-            startGost(c)
+        val local = if (cc.type == "socks5") cc else {
+            startGost(cc)
             Thread.sleep(1500)
-            c.copy(host = "127.0.0.1", port = LOCAL_PORT, user = "", pass = "")
+            cc.copy(host = "127.0.0.1", port = LOCAL_PORT, user = "", pass = "")
         }
 
         val dupPfd = t.dup()
@@ -137,7 +147,7 @@ class ProxyVpnService : VpnService() {
         )
         tunnelUp = true
         state.update { it.copy(tunnelUp = true) }
-        updateNotification("متصل عبر ${c.host}:${c.port} (${c.type.uppercase()})")
+        updateNotification("متصل عبر ${cc.host}:${cc.port} (${cc.type.uppercase()})")
     }
 
     private fun stopTunnelNow() {
