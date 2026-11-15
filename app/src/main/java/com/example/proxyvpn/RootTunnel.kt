@@ -110,32 +110,55 @@ object RootTunnel {
             false
         }
 
-    // يرجع "socks5" أو "socks4" أو "http" أو "https" أو null
-    fun detectType(host: String, port: Int): String? {
-        val isSocks5 = probe(host, port) { o, i ->
-            // greeting: version 5، طريقتين (بدون مصادقة و user/pass)
+    // SOCKS5: handshake + مصادقة (إذا طُلبت) + CONNECT فعلي والرد لازم يكون نجاح
+    private fun probeSocks5(host: String, port: Int, user: String, pass: String): Boolean =
+        probe(host, port) { o, i ->
             o.write(byteArrayOf(5, 2, 0, 2)); o.flush()
-            val r = ByteArray(2); readFully(i, r)
-            r[0] == 5.toByte()
+            val g = ByteArray(2); readFully(i, g)
+            if (g[0] != 5.toByte()) return@probe false
+            when (g[1]) {
+                0.toByte() -> {}
+                2.toByte() -> {
+                    if (user.isEmpty()) return@probe false
+                    val u = user.toByteArray(); val p = pass.toByteArray()
+                    val auth = ByteArray(3 + u.size + p.size)
+                    auth[0] = 1; auth[1] = u.size.toByte()
+                    System.arraycopy(u, 0, auth, 2, u.size)
+                    auth[2 + u.size] = p.size.toByte()
+                    System.arraycopy(p, 0, auth, 3 + u.size, p.size)
+                    o.write(auth); o.flush()
+                    val ar = ByteArray(2); readFully(i, ar)
+                    if (ar[1] != 0.toByte()) return@probe false
+                }
+                else -> return@probe false
+            }
+            // CONNECT 1.1.1.1:80 فعلي، والرد لازم يكون نجاح
+            o.write(byteArrayOf(5, 1, 0, 1, 1, 1, 1, 1, 0, 80.toByte())); o.flush()
+            val r = ByteArray(10); readFully(i, r)
+            r[0] == 5.toByte() && r[1] == 0.toByte()
         }
-        if (isSocks5) return "socks5"
 
-        val isSocks4 = probe(host, port) { o, i ->
-            // CONNECT إلى 1.1.1.1:80 بنسخة SOCKS4
+    // SOCKS4: رد القبول لازم يكون 90
+    private fun probeSocks4(host: String, port: Int): Boolean =
+        probe(host, port) { o, i ->
             o.write(byteArrayOf(4, 1, 0, 80, 1, 1, 1, 1, 0)); o.flush()
             val r = ByteArray(8); readFully(i, r)
-            r[0] == 0.toByte()
+            r[0] == 0.toByte() && r[1] == 90.toByte()
         }
-        if (isSocks4) return "socks4"
 
-        val isHttp = probe(host, port) { o, i ->
+    private fun probeHttp(host: String, port: Int): Boolean =
+        probe(host, port) { o, i ->
             o.write("CONNECT 1.1.1.1:443 HTTP/1.1\r\nHost: 1.1.1.1:443\r\n\r\n".toByteArray())
             o.flush()
             val line = BufferedReader(InputStreamReader(i)).readLine() ?: ""
             line.startsWith("HTTP/1")
         }
-        if (isHttp) return "http"
 
+    // يرجع "socks5" أو "socks4" أو "http" أو "https" أو null
+    fun detectType(host: String, port: Int, user: String = "", pass: String = ""): String? {
+        if (probeSocks5(host, port, user, pass)) return "socks5"
+        if (probeSocks4(host, port)) return "socks4"
+        if (probeHttp(host, port)) return "http"
         return if (probeHttps(host, port)) "https" else null
     }
 
@@ -147,7 +170,6 @@ object RootTunnel {
                 s.soTimeout = 5000
                 val o = s.getOutputStream()
                 val i = s.getInputStream()
-                // greeting: user/pass إذا موجود، وإلا بدون مصادقة
                 if (user.isNotEmpty()) o.write(byteArrayOf(5, 2, 0, 2))
                 else o.write(byteArrayOf(5, 1, 0))
                 o.flush()
@@ -164,7 +186,6 @@ object RootTunnel {
                     val ar = ByteArray(2); readFully(i, ar)
                     if (ar[1] != 0.toByte()) return@use false
                 }
-                // UDP ASSOCIATE (cmd=3) إلى 0.0.0.0:0
                 o.write(byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); o.flush()
                 val rep = ByteArray(4); readFully(i, rep)
                 rep[1] == 0.toByte()
@@ -224,17 +245,15 @@ object RootTunnel {
     fun start(ctx: Context, c: ProxyConfig): Boolean {
         status.value = "جاري تشغيل وضع الروت..."
 
-        // إذا الكشف التلقائي مفعّل، نحدد النوع قبل تشغيل أي شي
         val detected: String = if (c.autoDetect) {
             status.value = "جاري كشف نوع البروكسي..."
-            detectType(c.host, c.port) ?: run {
+            detectType(c.host, c.port, c.user, c.pass) ?: run {
                 status.value = "فشل: ما قدرت أعرف نوع البروكسي (SOCKS5 / SOCKS4 / HTTP / HTTPS)"
                 return false
             }
         } else c.type
         val eff = c.copy(type = detected)
 
-        // UDP تلقائي: فقط إذا SOCKS5 والبروكسي يرد على UDP ASSOCIATE
         val udpOn = detected == "socks5" && probeUdp(c.host, c.port, c.user, c.pass)
         val udpNote = if (udpOn) "UDP مفعّل" else "UDP غير مدعوم بهذا البروكسي"
 
