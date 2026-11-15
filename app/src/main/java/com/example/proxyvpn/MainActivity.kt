@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -64,16 +65,21 @@ class MainActivity : ComponentActivity() {
         val isRoot = cfg.mode == "root"
         val connected = if (isRoot) rootOn else vpn.active
         val tunnelReady = if (isRoot) rootOn else vpn.tunnelUp
+        val vpnLocal = vpn.localVia
 
-        LaunchedEffect(tunnelReady, cfg.mode, cfg.type) {
+        LaunchedEffect(tunnelReady, cfg.mode, vpnLocal) {
             proxyIp = if (!tunnelReady) {
                 "-"
             } else {
                 withContext(Dispatchers.IO) {
                     when {
                         isRoot -> Net.publicIp()
-                        cfg.type == "socks5" -> Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
-                        else -> Net.ipViaLocal(ProxyVpnService.LOCAL_PORT)
+                        vpnLocal -> {
+                            // ننتظر ثانيتين لاستقرار gost قبل الفحص
+                            delay(2000)
+                            Net.ipViaLocal(ProxyVpnService.LOCAL_PORT)
+                        }
+                        else -> Net.ipViaSocks(cfg.host, cfg.port, cfg.user, cfg.pass)
                     }
                 } ?: "فشل"
             }
